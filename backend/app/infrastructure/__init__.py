@@ -1,0 +1,1 @@
+"""Infrastructure boundaries (Redis) shared by future milestones."""

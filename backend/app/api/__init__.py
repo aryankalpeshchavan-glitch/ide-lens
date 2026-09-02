@@ -1,0 +1,1 @@
+"""API layer: FastAPI routers, DTOs, and request interfaces."""
