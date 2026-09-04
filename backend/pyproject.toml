@@ -1,7 +1,7 @@
 [project]
 name = "idealens-backend"
-version = "0.1.0"
-description = "IdeaLens backend — evidence-driven technical idea intelligence engine (M1 engineering foundation)."
+version = "0.2.0"
+description = "IdeaLens backend — evidence-driven technical idea intelligence engine."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
     "sqlalchemy>=2.0.41",
     "psycopg[binary]>=3.2.6",
     "redis>=5.2",
+    "httpx>=0.28",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +20,7 @@ dev = [
     "pytest>=8.3",
     "httpx>=0.28",
     "ruff>=0.9",
+    "mypy>=1.14",
 ]
 
 [build-system]
@@ -41,3 +43,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
