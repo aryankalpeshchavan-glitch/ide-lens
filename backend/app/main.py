@@ -11,6 +11,7 @@ are queued (Redis) or executed in-process when Redis is unavailable.
 
 import logging
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,10 +22,18 @@ from app.api.routes.health import router as health_router
 from app.api.routes.research_runs import router as research_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.db.session import init_schema
 
 logger = logging.getLogger(__name__)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        init_schema()
+    except Exception as exc:
+        logger.warning("Could not auto-initialize DB schema: %s", exc)
+    yield
 
 
 def create_app() -> FastAPI:
@@ -34,6 +43,7 @@ def create_app() -> FastAPI:
 
     application = FastAPI(
         title=settings.app_name,
+        lifespan=lifespan,
         version=__version__,
         description=(
             "IdeaLens backend — evidence-driven technical intelligence API. "
