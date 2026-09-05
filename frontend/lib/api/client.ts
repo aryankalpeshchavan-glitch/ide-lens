@@ -198,6 +198,22 @@ export interface RunArtifactsBundle {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
+export interface ResearchRunSummaryItem {
+  id: string;
+  status: "queued" | "running" | "completed" | "partially_failed" | "failed";
+  idea: string;
+  title?: string | null;
+  progress: number;
+  current_stage?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  disclosure: string;
+  decision_signal: number;
+  sources_count: number;
+  evidence_count: number;
+}
+
 /**
  * Upload a document (TXT, PDF, DOCX) and extract plain text.
  */
@@ -211,9 +227,34 @@ export async function uploadDocument(file: File): Promise<DocumentUploadResult> 
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
-    throw new Error(err.detail || "Document upload failed");
+    let message = "Document upload failed";
+    let code = "UPLOAD_FAILED";
+    if (typeof err.detail === "string") {
+      message = err.detail;
+    } else if (err.detail && typeof err.detail === "object") {
+      message = err.detail.message || JSON.stringify(err.detail);
+      code = err.detail.code || code;
+    }
+    const customError = new Error(message);
+    (customError as unknown as { code: string }).code = code;
+    throw customError;
   }
   return (await response.json()) as DocumentUploadResult;
+}
+
+/**
+ * List previous research runs from the backend database.
+ */
+export async function listResearchRuns(limit = 25): Promise<ResearchRunSummaryItem[]> {
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/research-runs?limit=${limit}`);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return (data.items || []) as ResearchRunSummaryItem[];
+  } catch (err) {
+    console.warn("Could not load research history from API:", err);
+    return [];
+  }
 }
 
 /**

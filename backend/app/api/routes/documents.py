@@ -51,10 +51,22 @@ async def upload_document(
             mime_type=file.content_type,
         )
     except DocumentValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+                "details": exc.details,
+            },
+        ) from exc
     except Exception as exc:
         raise HTTPException(
-            status_code=500, detail=f"Failed to process uploaded file: {exc}"
+            status_code=500,
+            detail={
+                "code": "SERVER_PROCESSING_ERROR",
+                "message": "An unexpected error occurred while processing the document.",
+                "details": {"error_type": type(exc).__name__},
+            },
         ) from exc
 
     doc_orm = DocumentORM(

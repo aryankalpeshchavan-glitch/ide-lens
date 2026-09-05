@@ -189,3 +189,40 @@ def test_create_run_with_document_id(client):
     assert body["decomposition"] is not None
     assert "objective" in body["decomposition"]
     assert "technologies" in body["decomposition"]
+
+
+def test_pdf_image_only_returns_clear_structured_error(client):
+    # A valid PDF structure with a page object but no text operators (scanned image-only simulation)
+    scanned_pdf = (
+        b"%PDF-1.4\n"
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n"
+        b"xref\n0 4\n0000000000 65535 f \n"
+        b"trailer\n<< /Size 4 /Root 1 0 R >>\n"
+        b"startxref\n200\n%%EOF\n"
+    )
+    files = {"file": ("scanned_paper.pdf", scanned_pdf, "application/pdf")}
+    res = client.post("/api/v1/documents/upload", files=files)
+    assert res.status_code == 422
+    err = res.json()["detail"]
+    assert err["code"] == "PDF_TEXT_NOT_FOUND"
+    assert "scanned images" in err["message"]
+
+
+def test_malformed_pdf_returns_clear_error(client):
+    corrupted_pdf = b"%PDF-1.4\ncorrupted and broken pdf body"
+    files = {"file": ("broken.pdf", corrupted_pdf, "application/pdf")}
+    res = client.post("/api/v1/documents/upload", files=files)
+    assert res.status_code == 422
+    err = res.json()["detail"]
+    assert err["code"] == "MALFORMED_PDF"
+
+
+def test_empty_file_returns_clear_error(client):
+    files = {"file": ("empty.txt", b"", "text/plain")}
+    res = client.post("/api/v1/documents/upload", files=files)
+    assert res.status_code == 422
+    err = res.json()["detail"]
+    assert err["code"] == "EMPTY_FILE"
+

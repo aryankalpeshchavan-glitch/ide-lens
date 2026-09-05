@@ -37,6 +37,16 @@ DANGEROUS_MAGIC = (
 class DocumentValidationError(ValueError):
     """Raised when an uploaded document fails size, type, or integrity checks."""
 
+    def __init__(
+        self,
+        message: str,
+        code: str = "DOCUMENT_VALIDATION_ERROR",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details or {}
+
 
 @dataclass
 class DocumentChunkData:
@@ -149,27 +159,36 @@ def extract_pdf(content: bytes, filename: str) -> tuple[str | None, str, dict[st
     """Safe pure-python PDF text and title extractor."""
     inspect_magic_bytes(content)
     if not content.startswith(b"%PDF-"):
-        raise DocumentValidationError("File does not start with valid %PDF- header.")
+        raise DocumentValidationError(
+            "File does not start with valid %PDF- header.",
+            code="MALFORMED_PDF",
+        )
 
     title: str | None = None
     extracted_chunks: list[str] = []
+    page_count = 0
 
     # Attempt to use pypdf if available in environment
     try:
         import pypdf
 
         reader = pypdf.PdfReader(io.BytesIO(content))
+        page_count = len(reader.pages)
         if reader.metadata and reader.metadata.title:
             title = str(reader.metadata.title).strip()
         for page in reader.pages:
-            page_text = page.extract_text() or ""
-            if page_text.strip():
-                extracted_chunks.append(page_text.strip())
+            try:
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    extracted_chunks.append(page_text.strip())
+            except Exception:
+                continue
         extracted_text = "\n\n".join(extracted_chunks)
-        if not title and extracted_chunks:
-            first_line = extracted_chunks[0].splitlines()[0].strip()
-            title = first_line[:150] if first_line else None
-        return title, extracted_text, {"page_count": len(reader.pages), "parser": "pypdf"}
+        if extracted_text.strip():
+            if not title and extracted_chunks:
+                first_line = extracted_chunks[0].splitlines()[0].strip()
+                title = first_line[:150] if first_line else None
+            return title, extracted_text, {"page_count": page_count, "parser": "pypdf"}
     except ImportError:
         pass
     except Exception:
@@ -223,7 +242,27 @@ def extract_pdf(content: bytes, filename: str) -> tuple[str | None, str, dict[st
     if not title and extracted_text:
         title = extracted_text[:120].strip()
 
-    meta = {"parser": "builtin-stream-scanner"}
+    if not extracted_text:
+        # Detect whether PDF has page structure but lacks selectable text (scanned / image-only)
+        has_page_structure = (
+            page_count > 0
+            or b"/Type /Page" in content
+            or b"/Type/Page" in content
+            or b"/Pages" in content
+        )
+        if has_page_structure:
+            raise DocumentValidationError(
+                "This PDF appears to contain scanned images rather than selectable text. "
+                "Upload a text-based PDF or use OCR-enabled processing.",
+                code="PDF_TEXT_NOT_FOUND",
+                details={"page_count": page_count, "format": "pdf_image_only"},
+            )
+        raise DocumentValidationError(
+            "No readable text could be extracted from the PDF. The file may be empty or corrupted.",
+            code="MALFORMED_PDF",
+        )
+
+    meta = {"parser": "builtin-stream-scanner", "page_count": page_count}
     return title, extracted_text, meta
 
 
@@ -278,11 +317,13 @@ def parse_and_validate_document(
 ) -> IngestedDocument:
     """Validate, parse, extract, and chunk a document (TXT, PDF, DOCX)."""
     if len(content) == 0:
-        raise DocumentValidationError("Uploaded file is empty.")
+        raise DocumentValidationError("Uploaded file is empty.", code="EMPTY_FILE")
 
     if len(content) > MAX_DOCUMENT_SIZE_BYTES:
         raise DocumentValidationError(
-            f"File size ({len(content)} bytes) exceeds limit of {MAX_DOCUMENT_SIZE_BYTES} bytes."
+            f"File size ({len(content)} bytes) exceeds limit of {MAX_DOCUMENT_SIZE_BYTES} bytes.",
+            code="FILE_TOO_LARGE",
+            details={"max_bytes": MAX_DOCUMENT_SIZE_BYTES, "size_bytes": len(content)},
         )
 
     file_hash = hashlib.sha256(content).hexdigest()
@@ -300,13 +341,17 @@ def parse_and_validate_document(
         title, text, meta = extract_docx(content, filename)
     else:
         raise DocumentValidationError(
-            "Unsupported file format. Only .txt, .pdf, and .docx are supported."
+            "Unsupported file format. Only .txt, .pdf, and .docx are supported.",
+            code="UNSUPPORTED_FORMAT",
         )
 
     # Bound extracted text to avoid storing unbounded copyrighted documents
     capped_text = text[:MAX_EXTRACTED_TEXT_CHARS].strip()
     if not capped_text:
-        raise DocumentValidationError("No readable text could be extracted from the document.")
+        raise DocumentValidationError(
+            "No readable text could be extracted from the document.",
+            code="EMPTY_TEXT_EXTRACTED",
+        )
 
     meta.update(
         {

@@ -399,16 +399,28 @@ def _require_run(session: Session, run_id: UUID):
 
 
 def _to_summary(session: Session, run) -> ResearchRunSummary:
+    canonical, evidence = run_counts(session, run)
+    title = None
+    if run.decomposition and isinstance(run.decomposition, dict):
+        title = run.decomposition.get("title") or run.decomposition.get("objective")
+    if not title:
+        first_line = run.idea.split(".")[0].strip()
+        title = first_line[:90] if first_line else run.idea[:90]
+
     return ResearchRunSummary(
         id=run.id,
         status=run.status,  # type: ignore[arg-type]
         idea=run.idea,
+        title=title,
         progress=run.progress,
         current_stage=run.current_stage,
         created_at=run.created_at,
         started_at=run.started_at,
         completed_at=run.completed_at,
         disclosure=run.disclosure,
+        decision_signal=run.decision_signal or 0,
+        sources_count=canonical,
+        evidence_count=evidence,
     )
 
 

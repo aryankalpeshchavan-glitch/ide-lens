@@ -33,12 +33,16 @@ class ResearchRunSummary(BaseModel):
     id: UUID
     status: RunStatus
     idea: str
+    title: str | None = None
     progress: int = Field(ge=0, le=100)
     current_stage: str | None = None
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
     disclosure: str
+    decision_signal: int = 0
+    sources_count: int = 0
+    evidence_count: int = 0
 
 
 class ResearchRunDetail(ResearchRunSummary):
