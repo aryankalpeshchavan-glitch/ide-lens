@@ -197,6 +197,49 @@ export interface RunArtifactsBundle {
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+const TOKEN_STORAGE_KEY = "idealens_auth_token";
+
+export function getStoredToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(TOKEN_STORAGE_KEY);
+}
+
+export function setStoredToken(token: string | null): void {
+  if (typeof window === "undefined") return;
+  if (token) {
+    localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  } else {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+  }
+}
+
+/**
+ * Acquire or refresh an authentication session token from the backend.
+ */
+export async function acquireSessionToken(userId?: string): Promise<string> {
+  const targetId = userId || `researcher-${Math.random().toString(36).substring(2, 9)}`;
+  const response = await fetch(`${API_BASE}/api/v1/auth/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: targetId }),
+  });
+  if (!response.ok) {
+    throw new Error(`Auth service returned status ${response.status}`);
+  }
+  const data = await response.json();
+  const token = data.access_token as string;
+  setStoredToken(token);
+  return token;
+}
+
+export function getAuthHeaders(extraHeaders: Record<string, string> = {}): HeadersInit {
+  const headers: Record<string, string> = { ...extraHeaders };
+  const token = getStoredToken();
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  return headers;
+}
 
 export interface ResearchRunSummaryItem {
   id: string;
@@ -221,10 +264,32 @@ export async function uploadDocument(file: File): Promise<DocumentUploadResult> 
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await fetch(`${API_BASE}/api/v1/documents/upload`, {
+  let headers: HeadersInit = {};
+  const token = getStoredToken();
+  if (token) {
+    headers = { Authorization: `Bearer ${token}` };
+  }
+
+  let response = await fetch(`${API_BASE}/api/v1/documents/upload`, {
     method: "POST",
+    headers,
     body: formData,
   });
+
+  // If auth is strictly enforced and no/invalid token was sent, acquire session and retry
+  if (response.status === 401) {
+    try {
+      const newToken = await acquireSessionToken();
+      response = await fetch(`${API_BASE}/api/v1/documents/upload`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${newToken}` },
+        body: formData,
+      });
+    } catch {
+      // Proceed to normal error handling
+    }
+  }
+
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
     let message = "Document upload failed";
@@ -247,7 +312,9 @@ export async function uploadDocument(file: File): Promise<DocumentUploadResult> 
  */
 export async function listResearchRuns(limit = 25): Promise<ResearchRunSummaryItem[]> {
   try {
-    const response = await fetch(`${API_BASE}/api/v1/research-runs?limit=${limit}`);
+    const response = await fetch(`${API_BASE}/api/v1/research-runs?limit=${limit}`, {
+      headers: getAuthHeaders(),
+    });
     if (!response.ok) return [];
     const data = await response.json();
     return (data.items || []) as ResearchRunSummaryItem[];
@@ -267,15 +334,32 @@ export async function createResearchRun(
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 12000);
   try {
-    const response = await fetch(`${API_BASE}/api/v1/research-runs`, {
+    let response = await fetch(`${API_BASE}/api/v1/research-runs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: getAuthHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         idea,
         document_id: documentId || null,
       }),
       signal: controller.signal,
     });
+
+    if (response.status === 401) {
+      const newToken = await acquireSessionToken();
+      response = await fetch(`${API_BASE}/api/v1/research-runs`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${newToken}`,
+        },
+        body: JSON.stringify({
+          idea,
+          document_id: documentId || null,
+        }),
+        signal: controller.signal,
+      });
+    }
+
     if (!response.ok) throw new Error(`Research API returned ${response.status}`);
     return (await response.json()) as ResearchRunResult;
   } finally {
@@ -287,7 +371,9 @@ export async function createResearchRun(
  * Fetch a single research run metadata record.
  */
 export async function getResearchRun(runId: string): Promise<ResearchRunResult> {
-  const response = await fetch(`${API_BASE}/api/v1/research-runs/${runId}`);
+  const response = await fetch(`${API_BASE}/api/v1/research-runs/${runId}`, {
+    headers: getAuthHeaders(),
+  });
   if (!response.ok) throw new Error(`Failed to fetch run: ${response.status}`);
   return (await response.json()) as ResearchRunResult;
 }
@@ -322,6 +408,7 @@ export async function pollResearchRun(
  */
 export async function fetchAllRunArtifacts(run: ResearchRunResult): Promise<RunArtifactsBundle> {
   const runId = run.id;
+  const headers = getAuthHeaders();
 
   const [
     sourcesRes,
@@ -336,17 +423,17 @@ export async function fetchAllRunArtifacts(run: ResearchRunResult): Promise<RunA
     graphRes,
     reportRes,
   ] = await Promise.allSettled([
-    fetch(`${API_BASE}/api/v1/research-runs/${runId}/sources`).then((r) => r.ok ? r.json() : []),
-    fetch(`${API_BASE}/api/v1/research-runs/${runId}/evidence`).then((r) => r.ok ? r.json() : []),
-    fetch(`${API_BASE}/api/v1/research-runs/${runId}/similarity`).then((r) => r.ok ? r.json() : []),
-    fetch(`${API_BASE}/api/v1/research-runs/${runId}/coverage`).then((r) => r.ok ? r.json() : []),
-    fetch(`${API_BASE}/api/v1/research-runs/${runId}/contradictions`).then((r) => r.ok ? r.json() : []),
-    fetch(`${API_BASE}/api/v1/research-runs/${runId}/gaps`).then((r) => r.ok ? r.json() : []),
-    fetch(`${API_BASE}/api/v1/research-runs/${runId}/collisions`).then((r) => r.ok ? r.json() : []),
-    fetch(`${API_BASE}/api/v1/research-runs/${runId}/stress-tests`).then((r) => r.ok ? r.json() : []),
-    fetch(`${API_BASE}/api/v1/research-runs/${runId}/differentiation`).then((r) => r.ok ? r.json() : []),
-    fetch(`${API_BASE}/api/v1/research-runs/${runId}/graph`).then((r) => r.ok ? r.json() : null),
-    fetch(`${API_BASE}/api/v1/research-runs/${runId}/report`).then((r) => r.ok ? r.json() : null),
+    fetch(`${API_BASE}/api/v1/research-runs/${runId}/sources`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${API_BASE}/api/v1/research-runs/${runId}/evidence`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${API_BASE}/api/v1/research-runs/${runId}/similarity`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${API_BASE}/api/v1/research-runs/${runId}/coverage`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${API_BASE}/api/v1/research-runs/${runId}/contradictions`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${API_BASE}/api/v1/research-runs/${runId}/gaps`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${API_BASE}/api/v1/research-runs/${runId}/collisions`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${API_BASE}/api/v1/research-runs/${runId}/stress-tests`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${API_BASE}/api/v1/research-runs/${runId}/differentiation`, { headers }).then((r) => r.ok ? r.json() : []),
+    fetch(`${API_BASE}/api/v1/research-runs/${runId}/graph`, { headers }).then((r) => r.ok ? r.json() : null),
+    fetch(`${API_BASE}/api/v1/research-runs/${runId}/report`, { headers }).then((r) => r.ok ? r.json() : null),
   ]);
 
   return {

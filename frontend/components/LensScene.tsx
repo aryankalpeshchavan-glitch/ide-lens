@@ -3,7 +3,7 @@
 import { Canvas, useFrame } from "@react-three/fiber";
 import { Float, OrbitControls, Stars, Text } from "@react-three/drei";
 import * as THREE from "three";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { RunArtifactsBundle } from "../lib/api/client";
 
 export interface NodeData {
@@ -516,14 +516,28 @@ export default function LensScene({ bundle, onSelectTab }: LensSceneProps) {
     document.getElementById("workspace")?.scrollIntoView({ behavior: "smooth" });
   };
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSelectedNode(null);
+        setHoveredNode(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   return (
-    <div className="relative h-[580px] w-full rounded-3xl border border-white/10 bg-slate-950/60 shadow-2xl backdrop-blur-md overflow-hidden">
+    <div className="relative h-[480px] sm:h-[540px] lg:h-[600px] w-full rounded-3xl border border-cyan-500/20 bg-gradient-to-b from-slate-950/80 via-slate-950/90 to-slate-950/95 shadow-[0_0_50px_-15px_rgba(56,189,248,0.15)] backdrop-blur-xl overflow-hidden group">
+      {/* Seamless radial vignette overlay */}
+      <div className="pointer-events-none absolute inset-0 z-10 bg-[radial-gradient(ellipse_at_center,transparent_40%,rgba(3,7,18,0.7)_100%)]" />
+
       {/* Header bar */}
       <div className="pointer-events-none absolute left-5 top-5 z-20 flex items-center gap-2 text-[10px] tracking-[.25em] text-cyan-400 font-mono">
-        <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
-        <span>3D RESEARCH GRAPH · 9 EVIDENCE NODES</span>
+        <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse shadow-[0_0_8px_rgba(56,189,248,0.8)]" />
+        <span>3D IDEA CORE · 9 EVIDENCE NODES</span>
       </div>
-      <div className="pointer-events-none absolute right-5 top-5 z-20 text-[10px] text-slate-500 font-mono">
+      <div className="pointer-events-none absolute right-5 top-5 z-20 text-[10px] text-slate-500 font-mono hidden sm:block">
         DRAG TO ROTATE · CLICK NODE TO INSPECT
       </div>
 

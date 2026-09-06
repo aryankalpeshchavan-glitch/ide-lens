@@ -32,11 +32,30 @@ export default function ResearchDashboard({
   onTabChange,
 }: ResearchDashboardProps) {
   const [internalActive, setInternalActive] = useState("Overview");
+  const [copiedReport, setCopiedReport] = useState(false);
   const active = activeTab ?? internalActive;
 
   const handleTabClick = (tab: string) => {
     setInternalActive(tab);
     if (onTabChange) onTabChange(tab);
+  };
+
+  const handleCopyReport = (content: string) => {
+    navigator.clipboard.writeText(content);
+    setCopiedReport(true);
+    setTimeout(() => setCopiedReport(false), 2000);
+  };
+
+  const handleDownloadReport = (content: string, filename: string) => {
+    const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   // Fallback to demo datasets when live bundle is not yet loaded
@@ -785,28 +804,102 @@ export default function ResearchDashboard({
       {/* 11. REPORT TAB */}
       {active === "Report" && (
         <Panel title="Traceable Research Intelligence Report">
-          <div className="rounded-2xl border border-white/10 bg-black/60 p-6">
-            <div className="mb-4 flex items-center justify-between border-b border-white/10 pb-4">
-              <span className="text-xs font-mono text-cyan-300">
-                Guardrail Status: {report?.language_guardrail_status ?? "PASSED"}
-              </span>
-              <button
-                onClick={() => {
-                  if (report?.content) {
-                    navigator.clipboard.writeText(report.content);
-                    alert("Report copied to clipboard!");
-                  }
-                }}
-                className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200 transition hover:bg-white/10"
-              >
-                Copy Markdown Report
-              </button>
+          <div id="report-content" className="rounded-2xl border border-white/10 bg-black/60 p-6">
+            {/* Action Bar */}
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-4 no-print">
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-xs font-mono font-semibold text-emerald-300">
+                  GUARDRAILS: {report?.language_guardrail_status ?? "PASSED"}
+                </span>
+                <span className="text-[11px] text-slate-500 font-mono hidden sm:inline">
+                  (Scope-aware signals · Zero absolute novelty claims)
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    const text = report?.content || `# IdeaLens Intelligence Report\n\nGenerated for: ${ideaTitle}\n\nEvidence grounded in ${sources.length} sources and ${evidences.length} empirical excerpts.`;
+                    handleCopyReport(text);
+                  }}
+                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200 transition hover:bg-white/10 hover:text-white"
+                >
+                  {copiedReport ? "✓ Copied to Clipboard" : "Copy Markdown"}
+                </button>
+
+                <button
+                  onClick={() => {
+                    const text = report?.content || `# IdeaLens Intelligence Report\n\nGenerated for: ${ideaTitle}\n\nEvidence grounded in ${sources.length} sources and ${evidences.length} empirical excerpts.`;
+                    const safeName = ideaTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 30);
+                    handleDownloadReport(text, `${safeName || "idealens"}-report.md`);
+                  }}
+                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-slate-200 transition hover:bg-white/10 hover:text-white"
+                >
+                  Download .md
+                </button>
+
+                <button
+                  onClick={() => window.print()}
+                  className="rounded-lg border border-cyan-400/40 bg-cyan-400/10 px-3.5 py-1.5 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-400/20 hover:text-white shadow-sm"
+                >
+                  Print / Export PDF ↗
+                </button>
+              </div>
             </div>
-            <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-6 text-slate-300">
-              {report?.content || (
-                `# IdeaLens Research Report\n\nGenerated for: ${ideaTitle}\nStatus: Ready for synthesis\n\nRun the live research pipeline to generate full markdown citations and traceable evidence.`
-              )}
-            </pre>
+
+            {/* Guardrail Banner */}
+            <div className="mb-6 rounded-xl border border-emerald-500/20 bg-emerald-950/20 p-4 text-xs text-emerald-200">
+              <div className="font-semibold font-mono tracking-wider text-emerald-300">
+                SCIENTIFIC INTEGRITY VERIFICATION:
+              </div>
+              <p className="mt-1 leading-5 text-slate-300">
+                This document adheres to rigorous epistemic standards: conclusions are explicitly bounded by the analyzed corpus.
+                High similarity indicates prior art overlap, not intellectual plagiarism; limited evidence indicates lack of documented prior work in retrieved sources, not a universal novelty proof.
+              </p>
+            </div>
+
+            {/* Markdown Report Render */}
+            <div className="rounded-xl border border-white/5 bg-slate-950/80 p-5">
+              <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-6 text-slate-300">
+                {report?.content || (
+                  `# IdeaLens Research Intelligence Report\n\n## Objective\n${ideaTitle}\n\n## Executive Summary\n${ideaDesc}\n\n## Empirical Findings Summary\n- Analyzed Sources: ${sources.length} verified literature & code references\n- Extracted Evidence Records: ${evidences.length} bounded citations\n- Multi-Dimensional Similarity: ${similarities.map(s => `${s.dimension} (${Math.round(s.score * 100)}%)`).join(", ")}\n\n## Scientific Scope Disclosure\nThis analysis reflects findings within the queried academic and open-source indices (arXiv, Semantic Scholar, Crossref, GitHub). Absence of evidence in this corpus does not constitute proof of universal non-existence.`
+                )}
+              </pre>
+            </div>
+
+            {/* Citations Bibliography */}
+            {sources.length > 0 && (
+              <div className="mt-8 border-t border-white/10 pt-6">
+                <h4 className="text-xs font-semibold uppercase tracking-[.2em] text-slate-400 font-mono">
+                  Primary References & Citations ({sources.length})
+                </h4>
+                <div className="mt-4 space-y-3">
+                  {sources.map((src, i) => (
+                    <div key={src.id || i} className="flex items-start justify-between gap-4 text-xs">
+                      <div className="text-slate-300">
+                        <span className="font-mono text-slate-500 mr-2">[{i + 1}]</span>
+                        <span className="font-semibold text-slate-100">{src.title}</span>
+                        {src.authors && src.authors.length > 0 && (
+                          <span className="text-slate-400"> — {src.authors.slice(0, 3).join(", ")}</span>
+                        )}
+                        {src.year && <span className="text-slate-500"> ({src.year})</span>}
+                      </div>
+                      {src.primary_url && (
+                        <a
+                          href={src.primary_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-mono text-cyan-400 hover:underline shrink-0"
+                        >
+                          Source ↗
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </Panel>
       )}

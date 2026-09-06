@@ -372,11 +372,37 @@ Create `backend/.env` by copying `backend/.env.example`:
 # Runtime environment
 ENVIRONMENT=development
 
+# Security & Authentication Guardrails
+# - "development_insecure_demo": unauthenticated local demo session
+# - "enforced": strict Bearer JWT required for all user endpoints (HTTP 401 on missing/invalid token)
+SECURITY_MODE=development_insecure_demo
+JWT_SECRET_KEY=change-this-secret-key-in-production-deployments
+JWT_ALGORITHM=HS256
+
 # Database (PostgreSQL recommended; SQLite fallback used if absent)
+# In production, set AUTO_INIT_SCHEMA=false and run `alembic upgrade head`
 DATABASE_URL=postgresql+psycopg://idealens:idealens@localhost:5432/idealens
+AUTO_INIT_SCHEMA=true
 
 # Redis (queue infrastructure; local threadpool fallback used if absent)
 REDIS_URL=redis://localhost:6379/0
+
+# Reliable Worker Queue & Stale Run Recovery
+QUEUE_KEY=idealens:research:queue
+QUEUE_PROCESSING_KEY=idealens:research:processing
+QUEUE_DLQ_KEY=idealens:research:dlq
+QUEUE_BLOCK_SECONDS=5
+WORKER_HEARTBEAT_TIMEOUT_SECONDS=180
+WORKER_MAX_RETRIES=2
+
+# Source Caching
+SOURCE_CACHE_ENABLED=true
+SOURCE_CACHE_TTL_SECONDS=86400
+
+# Application Rate Limiting
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_RESEARCH_RPM=10
+RATE_LIMIT_DOCUMENTS_RPM=20
 
 # Allowed CORS origins (JSON array)
 CORS_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]
@@ -388,10 +414,6 @@ RETRIEVAL_MAX_CONCURRENCY=4
 HTTP_TIMEOUT_SECONDS=30.0
 HTTP_MAX_RETRIES=3
 EXCERPT_CHAR_LIMIT=500
-
-# Worker queue
-QUEUE_KEY=idealens:research:queue
-QUEUE_BLOCK_SECONDS=5
 
 # Optional API Keys (rate-limit enhancements)
 # GITHUB_TOKEN=ghp_...
@@ -444,10 +466,15 @@ NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
    ```
 3. Open `http://localhost:3000` in your browser.
 
-### Database Setup & Migrations
+### Database Setup & Production Migrations
 
-To run migrations against PostgreSQL:
+In development mode, `AUTO_INIT_SCHEMA=true` automatically initializes SQLite tables.
+For production deployments (PostgreSQL), set `AUTO_INIT_SCHEMA=false` and run:
 ```bash
+cd backend
+alembic upgrade head
+```
+Production startup explicitly checks schema readiness and refuses to create ad-hoc schema tables on the fly.
 cd backend
 alembic upgrade head
 ```
