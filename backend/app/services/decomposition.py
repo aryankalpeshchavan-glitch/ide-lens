@@ -59,6 +59,88 @@ def _split_sentences(text: str) -> list[str]:
     return [s.strip() for s in raw_sentences if len(s.strip()) > 8]
 
 
+_GENERIC_MODIFIERS = {
+    "technical", "scientific", "proposed", "novel", "new", "various", "general",
+    "recent", "multiple", "several", "current", "existing", "different", "specific",
+    "practical", "experimental", "key", "main", "important", "simple", "complex",
+    "high", "low", "overall", "first", "second", "third", "primary", "paper", "study",
+    "based", "approach", "method", "using", "presents", "presents a",
+}
+
+_TECHNICAL_STEMS = {
+    "neural", "graph", "network", "agent", "reasoning", "learning", "verification",
+    "transformer", "dynamics", "optimization", "mechanism", "model", "engine",
+    "pipeline", "protocol", "quantum", "molecular", "equivariant", "geometric",
+    "consensus", "privacy", "cryptography", "attention", "state", "space", "database",
+    "kernel", "representation", "embedding", "encoder", "decoder", "heuristic",
+    "hamiltonian", "invariant", "vector", "search", "indexer", "synthetic",
+    "neurosymbolic", "knowledge", "multi-hop", "autonomous", "inference",
+    "alignment", "benchmark", "distillation", "diffusion", "federated", "zero-knowledge",
+}
+
+
+def extract_technical_components(idea: str) -> list[str]:
+    """Extract multi-word technical compounds rather than arbitrary adjacent word pairs.
+
+    Filters out generic fragments like 'technical scientific' or 'proposed method' and
+    isolates genuine conceptual units like 'neurosymbolic reasoning' or 'knowledge graphs'.
+    """
+    text_clean = re.sub(r"[^a-zA-Z0-9\-\s]", " ", idea.lower())
+    raw_tokens = [w for w in text_clean.split() if w not in _STOPWORDS and len(w) >= 3]
+
+    candidates: list[str] = []
+    # 2-word compounds
+    for i in range(len(raw_tokens) - 1):
+        w1, w2 = raw_tokens[i], raw_tokens[i + 1]
+        if w1 in _GENERIC_MODIFIERS or w2 in _GENERIC_MODIFIERS:
+            continue
+        if w1 == w2:
+            continue
+        # Check if either word matches technical cues
+        has_tech = (
+            w1 in _TECHNICAL_STEMS
+            or w2 in _TECHNICAL_STEMS
+            or any(
+                cue in w1 or cue in w2
+                for cue in _DIMENSION_CUES["technology"] | _DIMENSION_CUES["method"]
+            )
+        )
+        if has_tech:
+            candidates.append(f"{w1} {w2}")
+
+    # 3-word technical compounds (e.g. 'equivariant graph neural networks')
+    for i in range(len(raw_tokens) - 2):
+        w1, w2, w3 = raw_tokens[i], raw_tokens[i + 1], raw_tokens[i + 2]
+        if w1 in _GENERIC_MODIFIERS:
+            continue
+        has_tech = any(
+            w in _TECHNICAL_STEMS or any(cue in w for cue in _DIMENSION_CUES["technology"])
+            for w in (w1, w2, w3)
+        )
+        if has_tech and w1 != w2 and w2 != w3:
+            candidates.append(f"{w1} {w2} {w3}")
+
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    filtered: list[str] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            filtered.append(c)
+
+    # If technical compounds were sparse, fall back to non-generic bigrams
+    if len(filtered) < 2:
+        for i in range(len(raw_tokens) - 1):
+            w1, w2 = raw_tokens[i], raw_tokens[i + 1]
+            if w1 not in _GENERIC_MODIFIERS and w2 not in _GENERIC_MODIFIERS and w1 != w2:
+                phrase = f"{w1} {w2}"
+                if phrase not in seen:
+                    seen.add(phrase)
+                    filtered.append(phrase)
+
+    return filtered[:12]
+
+
 def decompose(idea: str) -> dict:
     """Extract structured fields, keywords, bigrams, and per-dimension cues from the idea text."""
     text_lower = idea.lower().replace("\n", " ")
@@ -81,7 +163,8 @@ def decompose(idea: str) -> dict:
         if matches:
             dimension_terms[dimension] = matches[:6]
 
-    concepts = [k for k in keywords if " " in k][:12]
+    # Meaningful technical component extraction
+    concepts = extract_technical_components(idea)
 
     # Sentence-based structured extraction
     sentences = _split_sentences(idea)
@@ -196,6 +279,7 @@ def decompose(idea: str) -> dict:
         "bigrams": [b for b in bigrams],
         "dimensions": dimension_terms,
         "concepts": concepts,
+        "technical_components": concepts,
     }
 
 

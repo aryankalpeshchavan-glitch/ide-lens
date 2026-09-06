@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
+from app.api.routes.auth import router as auth_router
 from app.api.routes.documents import router as documents_router
 from app.api.routes.health import router as health_router
 from app.api.routes.research_runs import router as research_router
@@ -29,10 +30,18 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        init_schema()
-    except Exception as exc:
-        logger.warning("Could not auto-initialize DB schema: %s", exc)
+    settings = get_settings()
+    if settings.should_auto_init_schema:
+        try:
+            init_schema()
+        except Exception as exc:
+            logger.warning("Could not auto-initialize DB schema: %s", exc)
+    else:
+        logger.info(
+            "Auto-schema initialization skipped in %s mode. "
+            "Production schemas must be managed via 'alembic upgrade head'.",
+            settings.environment,
+        )
     yield
 
 
@@ -69,6 +78,7 @@ def create_app() -> FastAPI:
         return response
 
     application.include_router(health_router)
+    application.include_router(auth_router)
     application.include_router(research_router)
     application.include_router(documents_router)
     return application

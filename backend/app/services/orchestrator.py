@@ -28,7 +28,9 @@ from app.services.runs import (
     add_event,
     get_run,
     queries_for_run,
+    recover_stale_runs,
     set_state,
+    update_heartbeat,
 )
 from app.sources.registry import AdapterRegistry, default_registry
 
@@ -66,6 +68,16 @@ class ResearchOrchestrator:
         self._session_factory = session_factory
         self._registry = registry or default_registry
 
+    def recover_stale(self) -> list[UUID]:
+        """Trigger stale run recovery using current settings."""
+        settings = get_settings()
+        with self._session_factory() as session:
+            return recover_stale_runs(
+                session,
+                timeout_seconds=settings.worker_stale_run_timeout_seconds,
+                max_retries=settings.worker_max_retries,
+            )
+
     def execute(self, run_id: UUID) -> str:
         """Run all stages; returns the final status."""
         observed_errors: list[dict] = []
@@ -73,6 +85,7 @@ class ResearchOrchestrator:
             run = get_run(session, run_id)
             if run is None:
                 return STATUS_FAILED
+            update_heartbeat(session, run)
             set_state(
                 session, run, status=STATUS_RUNNING, progress=2,
                 current_stage="decomposition", started=True,
@@ -85,7 +98,10 @@ class ResearchOrchestrator:
 
         with self._session_factory() as session:
             run = get_run(session, run_id)
+            if run is None:
+                return STATUS_FAILED
             status = STATUS_PARTIALLY_FAILED if observed_errors else STATUS_COMPLETED
+            update_heartbeat(session, run)
             set_state(
                 session, run, status=status, progress=100, current_stage=None,
                 completed=True,
@@ -111,6 +127,9 @@ class ResearchOrchestrator:
         """Run one stage with checkpointing; failures are isolated."""
         with self._session_factory() as session:
             run = get_run(session, run_id)
+            if run is None:
+                return
+            update_heartbeat(session, run)
             set_state(session, run, current_stage=stage_name)
             add_event(session, run, "stage.started", stage=stage_name)
             session.commit()
@@ -118,12 +137,14 @@ class ResearchOrchestrator:
             self._stage(stage_name, run_id)
             with self._session_factory() as session:
                 run = get_run(session, run_id)
-                set_state(
-                    session, run,
-                    progress=_STAGE_PROGRESS.get(stage_name, run.progress),
-                )
-                add_event(session, run, "stage.completed", stage=stage_name)
-                session.commit()
+                if run:
+                    update_heartbeat(session, run)
+                    set_state(
+                        session, run,
+                        progress=_STAGE_PROGRESS.get(stage_name, run.progress),
+                    )
+                    add_event(session, run, "stage.completed", stage=stage_name)
+                    session.commit()
         except Exception as exc:  # noqa: BLE001 - stage isolation boundary
             logger.warning("Stage %s failed for run %s: %s", stage_name, run_id, exc)
             observed_errors.append(
@@ -217,7 +238,11 @@ class ResearchOrchestrator:
 
         semaphore = asyncio.Semaphore(settings.retrieval_max_concurrency)
         items, failures = await run_retrieval(
-            self._registry, queries, limit=settings.retrieval_limit_per_source, semaphore=semaphore
+            self._registry,
+            queries,
+            limit=settings.retrieval_limit_per_source,
+            semaphore=semaphore,
+            idea=run.idea,
         )
 
         with self._session_factory() as session:

@@ -41,6 +41,13 @@ class ResearchRunORM(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+    owner_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True, default=None
+    )
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
 
     source_document_id: Mapped[UUID | None] = mapped_column(
         Uuid, nullable=True, index=True
@@ -71,6 +78,9 @@ class DocumentORM(Base):
     __tablename__ = "documents"
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True, default=None
+    )
     run_id: Mapped[UUID | None] = mapped_column(
         Uuid, ForeignKey("research_runs.id"), nullable=True, index=True
     )

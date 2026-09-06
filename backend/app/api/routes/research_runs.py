@@ -1,8 +1,9 @@
-"""Research-run endpoints: asynchronous create, status polling, and artifacts.
+"""Research-run endpoints: asynchronous create, status polling, and artifacts (AUTH §1.5).
 
 Contract per ADR-0003: ``POST`` returns ``202`` with the queued run; clients
 poll ``GET /{run_id}``. Artifact endpoints expose sources/evidence/analysis
-records with provenance back to source identifiers.
+records with provenance back to source identifiers. Access is strictly scoped
+by authenticated user ownership.
 """
 
 from typing import Annotated
@@ -11,6 +12,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.core.auth import CurrentUser
+from app.core.rate_limit import rate_limit_research
 from app.db.session import get_session
 from app.models import (
     ClaimORM,
@@ -18,11 +21,13 @@ from app.models import (
     ContradictionORM,
     CoverageResultORM,
     DifferentiationRecommendationORM,
+    DocumentORM,
     EvidenceORM,
     GraphEdgeORM,
     GraphNodeORM,
     ReportORM,
     ResearchGapORM,
+    RunEventORM,
     SimilarityResultORM,
     SourceItemORM,
     StressTestResultORM,
@@ -44,6 +49,7 @@ from app.schemas.analysis import (
     StressTestOut,
 )
 from app.schemas.research import (
+    QueryOut,
     ResearchRunCreate,
     ResearchRunDetail,
     ResearchRunList,
@@ -68,18 +74,32 @@ _NEXT_STEPS = [
 ]
 
 
-@router.post("", response_model=ResearchRunDetail, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "",
+    response_model=ResearchRunDetail,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(rate_limit_research)],
+)
 def create_research_run(
-    request: ResearchRunCreate, session: Annotated[Session, Depends(get_session)]
+    request: ResearchRunCreate,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> ResearchRunDetail:
-    """Create a queued run and dispatch it (Redis worker or local executor)."""
+    """Create a queued run associated with the caller and dispatch it."""
     from app.services.runs import create_run as persist_run
+
+    # If document is provided, verify caller owns it
+    if request.document_id:
+        doc = session.get(DocumentORM, request.document_id)
+        if doc and doc.owner_id is not None and doc.owner_id != user_id:
+            raise HTTPException(status_code=404, detail="Referenced document not found")
 
     run = persist_run(
         session,
         request.idea,
         decision_signal=decision_signal(request.idea),
         source_document_id=request.document_id,
+        owner_id=user_id,
     )
     dispatch(run.id)
     session.refresh(run)
@@ -89,29 +109,34 @@ def create_research_run(
 @router.get("", response_model=ResearchRunList)
 def list_research_runs(
     session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ResearchRunList:
-    """List runs, newest first, with simple paging."""
-    runs = list_runs(session, limit=limit, offset=offset)
+    """List runs for the authenticated user, newest first, with simple paging."""
+    runs = list_runs(session, limit=limit, offset=offset, owner_id=user_id)
     items = [_to_summary(session, run) for run in runs]
     return ResearchRunList(items=items, total=len(items), limit=limit, offset=offset)
 
 
 @router.get("/{run_id}", response_model=ResearchRunDetail)
 def get_research_run(
-    run_id: UUID, session: Annotated[Session, Depends(get_session)]
+    run_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> ResearchRunDetail:
     """Fetch run metadata plus live counts, queries, and events."""
-    run = _require_run(session, run_id)
+    run = _require_run(session, run_id, user_id)
     return _to_detail(session, run)
 
 
 @router.get("/{run_id}/sources", response_model=list[SourceItemOut])
 def get_run_sources(
-    run_id: UUID, session: Annotated[Session, Depends(get_session)]
+    run_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> list[SourceItemOut]:
-    run = _require_run(session, run_id)
+    run = _require_run(session, run_id, user_id)
     rows = (
         session.query(SourceItemORM)
         .filter(
@@ -142,9 +167,11 @@ def get_run_sources(
 
 @router.get("/{run_id}/evidence", response_model=list[EvidenceOut])
 def get_run_evidence(
-    run_id: UUID, session: Annotated[Session, Depends(get_session)]
+    run_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> list[EvidenceOut]:
-    run = _require_run(session, run_id)
+    run = _require_run(session, run_id, user_id)
     rows = session.query(EvidenceORM).filter(EvidenceORM.run_id == run.id).all()
     sources = {
         row.id: row
@@ -172,17 +199,22 @@ def get_run_evidence(
 
 @router.get("/{run_id}/claims", response_model=list[ClaimOut])
 def get_run_claims(
-    run_id: UUID, session: Annotated[Session, Depends(get_session)]
+    run_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> list[ClaimOut]:
-    run = _require_run(session, run_id)
+    run = _require_run(session, run_id, user_id)
     rows = session.query(ClaimORM).filter(ClaimORM.run_id == run.id).all()
     return [ClaimOut(id=row.id, kind=row.kind, status=row.status, text=row.text) for row in rows]
 
+
 @router.get("/{run_id}/similarity", response_model=list[SimilarityOut])
 def get_run_similarity(
-    run_id: UUID, session: Annotated[Session, Depends(get_session)]
+    run_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> list[SimilarityOut]:
-    run = _require_run(session, run_id)
+    run = _require_run(session, run_id, user_id)
     rows = (
         session.query(SimilarityResultORM)
         .filter(SimilarityResultORM.run_id == run.id)
@@ -206,9 +238,11 @@ def get_run_similarity(
 
 @router.get("/{run_id}/coverage", response_model=list[CoverageOut])
 def get_run_coverage(
-    run_id: UUID, session: Annotated[Session, Depends(get_session)]
+    run_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> list[CoverageOut]:
-    run = _require_run(session, run_id)
+    run = _require_run(session, run_id, user_id)
     rows = (
         session.query(CoverageResultORM)
         .filter(CoverageResultORM.run_id == run.id)
@@ -230,9 +264,11 @@ def get_run_coverage(
 
 @router.get("/{run_id}/contradictions", response_model=list[ContradictionOut])
 def get_run_contradictions(
-    run_id: UUID, session: Annotated[Session, Depends(get_session)]
+    run_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> list[ContradictionOut]:
-    run = _require_run(session, run_id)
+    run = _require_run(session, run_id, user_id)
     rows = session.query(ContradictionORM).filter(ContradictionORM.run_id == run.id).all()
     return [
         ContradictionOut(
@@ -254,9 +290,11 @@ def get_run_contradictions(
 
 @router.get("/{run_id}/gaps", response_model=list[ResearchGapOut])
 def get_run_gaps(
-    run_id: UUID, session: Annotated[Session, Depends(get_session)]
+    run_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> list[ResearchGapOut]:
-    run = _require_run(session, run_id)
+    run = _require_run(session, run_id, user_id)
     rows = session.query(ResearchGapORM).filter(ResearchGapORM.run_id == run.id).all()
     return [
         ResearchGapOut(
@@ -274,9 +312,11 @@ def get_run_gaps(
 
 @router.get("/{run_id}/collisions", response_model=list[CollisionCombinationOut])
 def get_run_collisions(
-    run_id: UUID, session: Annotated[Session, Depends(get_session)]
+    run_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> list[CollisionCombinationOut]:
-    run = _require_run(session, run_id)
+    run = _require_run(session, run_id, user_id)
     rows = (
         session.query(CollisionCombinationORM)
         .filter(CollisionCombinationORM.run_id == run.id)
@@ -298,9 +338,11 @@ def get_run_collisions(
 @router.get("/{run_id}/stress-tests", response_model=list[StressTestOut])
 @router.get("/{run_id}/stress-test", response_model=list[StressTestOut], include_in_schema=False)
 def get_run_stress_tests(
-    run_id: UUID, session: Annotated[Session, Depends(get_session)]
+    run_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> list[StressTestOut]:
-    run = _require_run(session, run_id)
+    run = _require_run(session, run_id, user_id)
     rows = session.query(StressTestResultORM).filter(StressTestResultORM.run_id == run.id).all()
     return [
         StressTestOut(
@@ -317,9 +359,11 @@ def get_run_stress_tests(
 
 @router.get("/{run_id}/differentiation", response_model=list[DifferentiationOut])
 def get_run_differentiation(
-    run_id: UUID, session: Annotated[Session, Depends(get_session)]
+    run_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> list[DifferentiationOut]:
-    run = _require_run(session, run_id)
+    run = _require_run(session, run_id, user_id)
     rows = (
         session.query(DifferentiationRecommendationORM)
         .filter(DifferentiationRecommendationORM.run_id == run.id)
@@ -342,9 +386,11 @@ def get_run_differentiation(
 
 @router.get("/{run_id}/graph", response_model=GraphOut)
 def get_run_graph(
-    run_id: UUID, session: Annotated[Session, Depends(get_session)]
+    run_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> GraphOut:
-    run = _require_run(session, run_id)
+    run = _require_run(session, run_id, user_id)
     nodes = session.query(GraphNodeORM).filter(GraphNodeORM.run_id == run.id).all()
     edges = session.query(GraphEdgeORM).filter(GraphEdgeORM.run_id == run.id).all()
     return GraphOut(
@@ -368,9 +414,11 @@ def get_run_graph(
 
 @router.get("/{run_id}/report", response_model=ReportOut)
 def get_run_report(
-    run_id: UUID, session: Annotated[Session, Depends(get_session)]
+    run_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> ReportOut:
-    run = _require_run(session, run_id)
+    run = _require_run(session, run_id, user_id)
     row = session.query(ReportORM).filter(ReportORM.run_id == run.id).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Report not generated yet")
@@ -386,14 +434,17 @@ def get_run_report(
         generated_at=row.generated_at,
     )
 
+
 # ---------------------------------------------------------------------------
 # Internal helpers (not exposed as endpoints)
 # ---------------------------------------------------------------------------
-def _require_run(session: Session, run_id: UUID):
+def _require_run(session: Session, run_id: UUID, user_id: str | None = None):
     from app.services.runs import get_run as _get_run
 
     run = _get_run(session, run_id)
     if run is None:
+        raise HTTPException(status_code=404, detail="Research run not found")
+    if user_id is not None and run.owner_id is not None and run.owner_id != user_id:
         raise HTTPException(status_code=404, detail="Research run not found")
     return run
 
@@ -425,9 +476,6 @@ def _to_summary(session: Session, run) -> ResearchRunSummary:
 
 
 def _to_detail(session: Session, run) -> ResearchRunDetail:
-    from app.models import RunEventORM
-    from app.schemas.analysis import QueryOut
-
     canonical, evidence = run_counts(session, run)
     recent_events = (
         session.query(RunEventORM)
@@ -477,4 +525,3 @@ def _to_detail(session: Session, run) -> ResearchRunDetail:
         queries=queries,
         events=events,
     )
-

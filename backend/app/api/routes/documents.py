@@ -1,4 +1,4 @@
-"""Document upload and text extraction API (DATA_MODEL.md §1.3)."""
+"""Document upload and text extraction API (DATA_MODEL.md §1.3 & AUTH §1.5)."""
 
 from typing import Annotated
 from uuid import UUID
@@ -7,6 +7,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.auth import CurrentUser
+from app.core.rate_limit import rate_limit_upload
+from app.core.security import sanitize_filename
 from app.db.session import get_session
 from app.models.research import DocumentChunkORM, DocumentORM
 from app.services.documents import (
@@ -34,19 +37,23 @@ class DocumentUploadResponse(BaseModel):
     "/upload",
     response_model=DocumentUploadResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit_upload)],
 )
 async def upload_document(
     session: Annotated[Session, Depends(get_session)],
     file: Annotated[UploadFile, File()],
+    user_id: CurrentUser,
 ) -> DocumentUploadResponse:
     """Upload TXT, PDF, or DOCX document and extract structured text safely."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename in upload.")
 
+    safe_filename = sanitize_filename(file.filename)
+
     try:
         content = await file.read()
         ingested = parse_and_validate_document(
-            filename=file.filename,
+            filename=safe_filename,
             content=content,
             mime_type=file.content_type,
         )
@@ -70,6 +77,7 @@ async def upload_document(
         ) from exc
 
     doc_orm = DocumentORM(
+        owner_id=user_id,
         filename=ingested.filename,
         mime_type=ingested.mime_type,
         size_bytes=ingested.size_bytes,
@@ -114,10 +122,15 @@ async def upload_document(
 def get_document(
     document_id: UUID,
     session: Annotated[Session, Depends(get_session)],
+    user_id: CurrentUser,
 ) -> DocumentUploadResponse:
-    """Retrieve an ingested document by its UUID."""
+    """Retrieve an ingested document by its UUID, verifying ownership."""
     doc = session.get(DocumentORM, document_id)
     if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Authorize ownership boundary
+    if doc.owner_id is not None and doc.owner_id != user_id:
         raise HTTPException(status_code=404, detail="Document not found")
 
     chunks_count = (

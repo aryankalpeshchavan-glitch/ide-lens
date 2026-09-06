@@ -43,6 +43,13 @@ async def request_with_retry(
     max_retries: int | None = None,
 ) -> httpx.Response:
     """Perform a GET with retries; returns the final response."""
+    from app.core.security import is_safe_external_url
+
+    if not is_safe_external_url(url):
+        raise PermanentSourceError(
+            f"{adapter_id} blocked unsafe external URL target (SSRF guard): {url}"
+        )
+
     settings = get_settings()
     attempts = settings.http_max_retries if max_retries is None else max_retries
     for attempt in range(attempts + 1):

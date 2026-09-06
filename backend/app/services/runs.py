@@ -40,20 +40,24 @@ def create_run(
     *,
     decision_signal: int,
     source_document_id: UUID | None = None,
+    owner_id: str | None = None,
 ) -> ResearchRunORM:
-    """Persist a queued run and commit."""
+    """Persist a queued run with optional ownership and commit."""
     from app.models.research import DocumentORM
 
     now = datetime.now(UTC)
     run = ResearchRunORM(
         idea=idea.strip(),
         source_document_id=source_document_id,
+        owner_id=owner_id,
         status=STATUS_QUEUED,
         progress=0,
         current_stage=None,
         decision_signal=decision_signal,
         created_at=now,
         updated_at=now,
+        last_heartbeat_at=now,
+        retry_count=0,
         disclosure=(
             "Scope-aware signals only: similarity never equals plagiarism, and "
             "limited evidence never proves novelty. The retrieved corpus is not "
@@ -67,6 +71,8 @@ def create_run(
         doc = session.get(DocumentORM, source_document_id)
         if doc is not None:
             doc.run_id = run.id
+            if owner_id and not doc.owner_id:
+                doc.owner_id = owner_id
 
     session.commit()
     session.refresh(run)
@@ -78,15 +84,94 @@ def get_run(session: Session, run_id: UUID) -> ResearchRunORM | None:
 
 
 def list_runs(
-    session: Session, *, limit: int = 50, offset: int = 0
+    session: Session,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    owner_id: str | None = None,
 ) -> list[ResearchRunORM]:
+    """List runs, optionally scoped by owner identity."""
+    query = session.query(ResearchRunORM)
+    if owner_id is not None:
+        query = query.filter(ResearchRunORM.owner_id == owner_id)
     return (
-        session.query(ResearchRunORM)
-        .order_by(ResearchRunORM.created_at.desc())
+        query.order_by(ResearchRunORM.created_at.desc())
         .limit(limit)
         .offset(offset)
         .all()
     )
+
+
+def update_heartbeat(session: Session, run: ResearchRunORM) -> None:
+    """Record a liveness heartbeat timestamp for a running pipeline."""
+    now = datetime.now(UTC)
+    run.last_heartbeat_at = now
+    run.updated_at = now
+
+
+def recover_stale_runs(
+    session: Session,
+    *,
+    timeout_seconds: int = 180,
+    max_retries: int = 3,
+) -> list[UUID]:
+    """Detect runs stuck in running status without recent heartbeat and recover or fail them."""
+    from app.workers.queue import move_to_dlq, re_enqueue_stale_job
+
+    now = datetime.now(UTC)
+    running_runs = (
+        session.query(ResearchRunORM)
+        .filter(ResearchRunORM.status == STATUS_RUNNING)
+        .all()
+    )
+    recovered_ids: list[UUID] = []
+
+    for run in running_runs:
+        ref_time = run.last_heartbeat_at or run.started_at or run.updated_at
+        elapsed = (now - ref_time).total_seconds() if ref_time else 9999
+        if elapsed > timeout_seconds:
+            recovered_ids.append(run.id)
+            if run.retry_count < max_retries:
+                run.retry_count += 1
+                run.status = STATUS_QUEUED
+                run.last_heartbeat_at = now
+                add_event(
+                    session,
+                    run,
+                    "run.recovered",
+                    stage=run.current_stage,
+                    payload={"retry_count": run.retry_count, "stale_seconds": elapsed},
+                )
+                re_enqueue_stale_job(run.id)
+            else:
+                run.status = STATUS_FAILED
+                run.completed_at = now
+                add_event(
+                    session,
+                    run,
+                    "run.timeout_failed",
+                    stage=run.current_stage,
+                    payload={
+                        "error": (
+                            f"Run exceeded heartbeat threshold ({elapsed:.0f}s) and "
+                            f"max retries ({max_retries})"
+                        )
+                    },
+                )
+                current = list(run.error_summary or [])
+                current.append({
+                    "class": "WORKER_TIMEOUT",
+                    "stage": run.current_stage,
+                    "message": (
+                        f"Worker crashed or timed out after {elapsed:.0f}s without heartbeat."
+                    ),
+                })
+                run.error_summary = current
+                move_to_dlq(run.id, reason="heartbeat_timeout")
+
+    if recovered_ids:
+        session.commit()
+    return recovered_ids
 
 
 def run_counts(session: Session, run: ResearchRunORM) -> tuple[int, int]:

@@ -11,6 +11,8 @@ import os
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("RUN_SYNC_EXECUTION", "true")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("HTTP_TIMEOUT_SECONDS", "2.0")
+os.environ.setdefault("HTTP_MAX_RETRIES", "1")
 
 
 import pytest  # noqa: E402
@@ -36,3 +38,43 @@ def _clean_tables():
         session.execute(table.delete())
     session.commit()
     session.close()
+
+
+@pytest.fixture(autouse=True)
+def _mock_external_retrieval(monkeypatch):
+    """Prevent slow outbound HTTP calls to external academic APIs during test runs."""
+    async def mock_run_retrieval(registry, queries, *, limit, semaphore, idea=""):
+        from app.sources.base import SourceItemData
+        sample_items = [
+            SourceItemData(
+                adapter_id="arxiv",
+                source_kind="paper",
+                title="Graph Neural Networks with Equivariant Geometry",
+                identifiers={"arxiv_id": "2106.12345", "doi": "10.1234/gnn.2021"},
+                authors=["J. Doe", "A. Smith"],
+                year=2021,
+                abstract_or_description=(
+                    "We investigate equivariant graph neural networks and Hamiltonian "
+                    "dynamics for invariant molecular property prediction."
+                ),
+                primary_url="https://arxiv.org/abs/2106.12345",
+                quality_signals={"citation_count": 42},
+            ),
+            SourceItemData(
+                adapter_id="github",
+                source_kind="repository",
+                title="geometry-gnn-molecular",
+                identifiers={"repo": "testorg/geometry-gnn-molecular"},
+                authors=["testorg"],
+                year=2022,
+                abstract_or_description=(
+                    "Open-source implementation of equivariant graph networks for "
+                    "molecular dynamics simulation and property prediction."
+                ),
+                primary_url="https://github.com/testorg/geometry-gnn-molecular",
+                quality_signals={"stars": 128},
+            ),
+        ]
+        return sample_items, []
+
+    monkeypatch.setattr("app.services.orchestrator.run_retrieval", mock_run_retrieval)
